@@ -48,9 +48,17 @@ from langchain_opensandbox.factory import get_backend
 agent = create_deep_agent(model=model, backend=get_backend)
 ```
 
-Nothing connects at import time or at graph-build time — the lookup happens on first use, and if the
-sandbox has since died (timeout, crash) a fresh one is created transparently. In-sandbox state
-(installed packages, written files) does not survive that.
+`get_backend` performs **no I/O**. That matters more than it sounds: deepagents resolves the backend
+on every model call — `FilesystemMiddleware` has to know whether to expose the `execute` tool — so a
+factory that connects eagerly pays a sandbox lookup per model call, synchronously, on the event loop.
+(ASGI servers object, correctly: `langgraph dev` refuses the blocking `socket.connect` unless you pass
+`--allow-blocking`.) What you get back is a `LazyOpenSandboxSandbox`, which connects on the first
+operation the agent actually performs, and serves the async half of the protocol from the async
+OpenSandbox client rather than a worker thread. A model call that never touches the sandbox costs
+nothing at all.
+
+If the sandbox has since died (timeout, crash) a fresh one is created transparently on the next call.
+In-sandbox state — installed packages, written files — does not survive that.
 
 For a plain ReAct agent that wants code execution without adopting the deep-agent filesystem, there
 is also a standalone tool driving the same thread-scoped sandbox:
@@ -81,8 +89,9 @@ entrypoint if you want it.
 ## Package layout
 
 `backend.py` and `config.py` are provider-neutral: they take no LangGraph runtime, config or thread,
-so the backend is drivable from a plain script or a test. `factory.py` and `tools.py` are the
-LangGraph-specific half and are imported explicitly rather than re-exported from the package root.
+so the backend is drivable from a plain script or a test — `LazyOpenSandboxSandbox` takes two plain
+connect callables, not a runtime. `factory.py` and `tools.py` are the LangGraph-specific half and are
+imported explicitly rather than re-exported from the package root.
 `tests/test_package_boundary.py` enforces the split.
 
 (LangGraph is imported into your process either way — `deepagents` depends on `langchain`, which

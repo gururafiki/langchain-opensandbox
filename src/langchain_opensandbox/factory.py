@@ -22,7 +22,7 @@ from langgraph.config import get_config
 from langgraph.prebuilt import ToolRuntime
 from langgraph.runtime import Runtime
 
-from .backend import OpenSandboxSandbox
+from .backend import LazyOpenSandboxSandbox, OpenSandboxSandbox
 from .config import OpenSandboxSettings
 
 
@@ -153,12 +153,23 @@ class SandboxFactory:
 
 
 def get_backend(runtime: Runtime | ToolRuntime) -> OpenSandboxSandbox:
-    """Find or create the thread's sandbox and wrap it as a backend.
+    """Return a backend bound to the thread's sandbox, connecting on first use.
 
     Implements the deepagents ``BackendFactory`` protocol — pass directly as
     ``backend=get_backend`` to ``create_deep_agent``.
+
+    **This call performs no I/O.** deepagents resolves the backend on every
+    model call to decide whether to expose the ``execute`` tool, so connecting
+    here would mean a sandbox lookup per model call, synchronously, on the
+    event loop. The returned :class:`LazyOpenSandboxSandbox` dials the server
+    only when the agent actually touches the sandbox, and uses the async client
+    when it is reached through the async half of the protocol.
     """
-    return OpenSandboxSandbox(sandbox=SandboxFactory(runtime).get_sandbox())
+    factory = SandboxFactory(runtime)
+    return LazyOpenSandboxSandbox(
+        connect=factory.get_sandbox,
+        aconnect=factory.aget_sandbox,
+    )
 
 
 def get_sandbox(runtime: Runtime | ToolRuntime) -> Any:

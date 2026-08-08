@@ -55,6 +55,7 @@ class TestPackageBoundary:
         import langchain_opensandbox
 
         assert langchain_opensandbox.__all__ == [
+            "LazyOpenSandboxSandbox",
             "OpenSandboxSandbox",
             "OpenSandboxSettings",
         ]

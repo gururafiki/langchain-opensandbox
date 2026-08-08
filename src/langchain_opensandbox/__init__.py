@@ -34,10 +34,11 @@ Limitations:
     any in-sandbox state (installed packages, written files) is lost.
 """
 
-from .backend import OpenSandboxSandbox
+from .backend import LazyOpenSandboxSandbox, OpenSandboxSandbox
 from .config import OpenSandboxSettings
 
 __all__ = [
+    "LazyOpenSandboxSandbox",
     "OpenSandboxSandbox",
     "OpenSandboxSettings",
 ]
