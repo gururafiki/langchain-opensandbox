@@ -15,6 +15,9 @@ straight to ``create_deep_agent(backend=...)``.
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import weakref
 from datetime import timedelta
 from typing import Any
 
@@ -24,6 +27,40 @@ from langgraph.runtime import Runtime
 
 from .backend import LazyOpenSandboxSandbox, OpenSandboxSandbox
 from .config import OpenSandboxSettings
+
+# Find-or-create must be atomic per thread, or concurrent first use creates one
+# container per caller. This is not hypothetical: an agent that issues three
+# `write_file` calls in one turn gets three backend instances (the harness
+# resolves the backend per tool call), all three find no running sandbox, all
+# three create one, and each file lands in a different container — every write
+# reports success and `ls` then shows exactly one file.
+#
+# Weak values so a thread's lock is collected once nothing is waiting on it: a
+# caller inside `async with` holds a strong reference for the duration, and a
+# long-lived server does not accumulate one lock per conversation forever.
+_ALOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
+_LOCKS_GUARD = threading.Lock()
+
+
+def _alock_for(thread_id: str) -> asyncio.Lock:
+    """Return the process-wide async find-or-create lock for *thread_id*."""
+    with _LOCKS_GUARD:
+        lock = _ALOCKS.get(thread_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _ALOCKS[thread_id] = lock
+        return lock
+
+
+def _lock_for(thread_id: str) -> threading.Lock:
+    """Return the process-wide sync find-or-create lock for *thread_id*."""
+    with _LOCKS_GUARD:
+        lock = _LOCKS.get(thread_id)
+        if lock is None:
+            lock = threading.Lock()
+            _LOCKS[thread_id] = lock
+        return lock
 
 
 class SandboxFactory:
@@ -114,42 +151,74 @@ class SandboxFactory:
             await manager.close()
 
     def get_sandbox(self) -> Any:
-        """Find or create a sandbox (sync)."""
+        """Find or create a sandbox for this thread (sync).
+
+        Find-or-create runs under a per-thread lock, so concurrent first use
+        yields ONE container rather than one per caller.
+        """
         from opensandbox.sync.sandbox import SandboxSync
 
-        sandbox_id = self._find_sandbox_id()
-        if sandbox_id:
+        thread_id = self._get_thread_id()
+
+        def _connect(sandbox_id: str) -> Any:
             return SandboxSync.connect(
                 sandbox_id,
                 connection_config=self._make_sync_connection(),
                 skip_health_check=False,
             )
-        return SandboxSync.create(
-            self._config.opensandbox_image,
-            connection_config=self._make_sync_connection(),
-            timeout=timedelta(hours=1),
-            env={"PYTHONUNBUFFERED": "1"},
-            metadata={"thread_id": self._get_thread_id()},
-        )
+
+        # Fast path: an existing sandbox needs no lock.
+        sandbox_id = self._find_sandbox_id()
+        if sandbox_id:
+            return _connect(sandbox_id)
+
+        with _lock_for(thread_id):
+            # Re-check: another caller may have created one while we waited.
+            sandbox_id = self._find_sandbox_id()
+            if sandbox_id:
+                return _connect(sandbox_id)
+            return SandboxSync.create(
+                self._config.opensandbox_image,
+                connection_config=self._make_sync_connection(),
+                timeout=timedelta(hours=1),
+                env={"PYTHONUNBUFFERED": "1"},
+                metadata={"thread_id": thread_id},
+            )
 
     async def aget_sandbox(self) -> Any:
-        """Find or create a sandbox (async)."""
+        """Find or create a sandbox for this thread (async).
+
+        Find-or-create runs under a per-thread lock, so concurrent first use
+        yields ONE container rather than one per caller.
+        """
         from opensandbox.sandbox import Sandbox
 
-        sandbox_id = await self._afind_sandbox_id()
-        if sandbox_id:
+        thread_id = self._get_thread_id()
+
+        async def _connect(sandbox_id: str) -> Any:
             return await Sandbox.connect(
                 sandbox_id,
                 connection_config=self._make_async_connection(),
                 skip_health_check=False,
             )
-        return await Sandbox.create(
-            self._config.opensandbox_image,
-            connection_config=self._make_async_connection(),
-            timeout=timedelta(hours=1),
-            env={"PYTHONUNBUFFERED": "1"},
-            metadata={"thread_id": self._get_thread_id()},
-        )
+
+        # Fast path: an existing sandbox needs no lock.
+        sandbox_id = await self._afind_sandbox_id()
+        if sandbox_id:
+            return await _connect(sandbox_id)
+
+        async with _alock_for(thread_id):
+            # Re-check: another caller may have created one while we waited.
+            sandbox_id = await self._afind_sandbox_id()
+            if sandbox_id:
+                return await _connect(sandbox_id)
+            return await Sandbox.create(
+                self._config.opensandbox_image,
+                connection_config=self._make_async_connection(),
+                timeout=timedelta(hours=1),
+                env={"PYTHONUNBUFFERED": "1"},
+                metadata={"thread_id": thread_id},
+            )
 
 
 def get_backend(runtime: Runtime | ToolRuntime) -> OpenSandboxSandbox:
