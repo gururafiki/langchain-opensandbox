@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      # DELIBERATE CAP, not a stale bound — do not let Dependabot widen it.
+      # `factory.py`'s `get_backend` is a deepagents `BackendFactory`
+      # (`deepagents.backends.protocol.BackendFactory`), a type alias that
+      # deepagents `main` has dropped and that 0.7.0 removes: passing a callable
+      # as `backend` already emits a LangChainDeprecationWarning naming that
+      # release. Taking 0.7 without porting `factory.py` off it breaks the
+      # managed-sandbox path.
+      - dependency-name: deepagents
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
