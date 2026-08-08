@@ -1,0 +1,80 @@
+name: Release to PyPI
+
+# Publishes via PyPI Trusted Publishing (OIDC) — there is deliberately NO API
+# token anywhere in this repo or its secrets. PyPI verifies the short-lived
+# token GitHub mints for this exact workflow, in this exact repo, in the `pypi`
+# environment. Nothing to leak, nothing to rotate.
+#
+# One-time setup on PyPI (https://pypi.org/manage/account/publishing/):
+#   PyPI Project Name: langchain-opensandbox
+#   Owner:             gururafiki
+#   Repository name:   langchain-opensandbox
+#   Workflow name:     release.yml
+#   Environment name:  pypi
+# Register it as a *pending* publisher — the project does not exist on PyPI
+# until the first successful run, and pending publishers are exactly how a
+# first release is meant to work.
+#
+# To cut a release: bump `version` in pyproject.toml, merge, then publish a
+# GitHub Release (or run this workflow manually). The tag drives nothing; the
+# version in pyproject.toml is the source of truth, and PyPI rejects a
+# re-upload of a version that already exists.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  # Never publish a tree that does not pass its own gate. The quality workflow
+  # runs on PRs and pushes, but a release can be cut from any commit, so the
+  # checks are repeated here rather than assumed.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check src/ tests/
+      - run: ruff format --check src/ tests/
+      - run: mypy src/
+      - run: pytest
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install build twine
+      - run: python -m build
+      - name: Check metadata renders on PyPI
+        run: twine check dist/*
+      - uses: actions/upload-artifact@v5
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # The environment name must match the one registered on PyPI, or the OIDC
+    # exchange is rejected.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/langchain-opensandbox
+    permissions:
+      # Mints the OIDC token PyPI verifies. This is the whole mechanism —
+      # without it the publish step has no credential and no way to get one.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
