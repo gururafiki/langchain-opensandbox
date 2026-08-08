@@ -16,6 +16,7 @@ import uuid
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolRuntime
 
+from .backend import _combine_output
 from .factory import aget_sandbox
 
 
@@ -58,9 +59,10 @@ async def execute_python(code: str, runtime: ToolRuntime) -> str:
         execution = await sandbox.commands.run(f"python3 {path}")
         await sandbox.commands.run(f"rm -f {path}")
 
-        stdout = "".join(m.text for m in execution.logs.stdout)
-        stderr = "".join(m.text for m in execution.logs.stderr)
-        output = stdout + stderr
+        # `_combine_output` puts the line breaks back — OpenSandbox strips them
+        # and sends one message per line, so joining on "" would return a
+        # two-line `print()` as a single run-together line.
+        output = _combine_output(execution)
 
         exit_code: int | None = None
         if execution.id:

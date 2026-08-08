@@ -31,10 +31,25 @@ from deepagents.backends.sandbox import BaseSandbox
 
 
 def _combine_output(execution: Any) -> str:
-    """Join an execution's stdout and stderr streams into one string."""
-    stdout = "".join(m.text for m in execution.logs.stdout)
-    stderr = "".join(m.text for m in execution.logs.stderr)
-    return stdout + stderr
+    r"""Reassemble an execution's stdout and stderr into one string.
+
+    OpenSandbox's execd emits **one ``OutputMessage`` per line, with the line
+    terminator stripped** — verified against a live server:
+    ``printf 'a\\nb\\nc\\n'`` arrives as ``['a', 'b', 'c']``.
+
+    So the newlines have to be put back. Joining on ``""`` runs every line of
+    output together, which silently breaks the newline-delimited JSON that
+    ``BaseSandbox`` parses for ``ls`` / ``glob`` / ``grep``: ``ls`` on a
+    directory with two or more entries returned NO entries and
+    ``error=None`` — a wrong answer that looks like an empty directory.
+
+    A trailing newline cannot be recovered: a command that ended with one and a
+    command that did not are indistinguishable by the time the output arrives
+    as messages. Nothing here depends on it.
+    """
+    lines = [m.text for m in execution.logs.stdout]
+    lines += [m.text for m in execution.logs.stderr]
+    return "\n".join(lines)
 
 
 def _run_opts(timeout: int | None) -> Any:
