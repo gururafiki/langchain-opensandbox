@@ -73,7 +73,7 @@ jobs:
       # without it the publish step has no credential and no way to get one.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
